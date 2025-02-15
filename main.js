@@ -13,7 +13,7 @@ const PROCESSED_ADS_FILE = 'processedAds.json';
 let subscribers = loadJSON(SUBSCRIBERS_FILE, []);
 let processedAds = new Set(loadJSON(PROCESSED_ADS_FILE, []));
 
-// 🛠️ Функція для безпечного читання JSON
+// 🛠️ Безпечне завантаження JSON
 function loadJSON(file, defaultValue) {
     if (fs.existsSync(file)) {
         try {
@@ -25,7 +25,7 @@ function loadJSON(file, defaultValue) {
     return defaultValue;
 }
 
-// 💾 Функція для безпечного запису JSON
+// 💾 Безпечне збереження JSON
 function saveJSON(file, data) {
     try {
         fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
@@ -34,10 +34,9 @@ function saveJSON(file, data) {
     }
 }
 
-// ⏳ Функція перевірки часу публікації (не старше 2 днів)
+// ⏳ Перевірка часу публікації (не старше 2 днів)
 function isRecentlyPublished(timeText) {
     if (!timeText) return false;
-
     if (timeText.includes('Щойно')) return true;
 
     const minutesMatch = timeText.match(/(\d+)\s*хв/);
@@ -52,19 +51,20 @@ function isRecentlyPublished(timeText) {
     return false;
 }
 
-// 🔍 Функція отримання оголошень з OLX (по 10 штук за раз)
+// 🔍 Функція отримання оголошень з OLX
 async function getOlxListings() {
     console.log('🔍 Виконуємо парсинг OLX...');
     let browser;
 
     try {
-        browser = await puppeteer.launch({ headless: true });
+        browser = await puppeteer.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        });
+
         const page = await browser.newPage();
+        await page.goto('https://www.olx.ua/uk/nedvizhimost/arenda-kvartir/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        const url = 'https://www.olx.ua/uk/nedvizhimost/arenda-kvartir/';
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-        // Чекаємо на завантаження першого оголошення
         await page.waitForSelector('div[data-cy="l-card"]', { timeout: 5000 });
 
         let listings = await page.evaluate(() => {
@@ -85,46 +85,22 @@ async function getOlxListings() {
 
         console.log(`✅ Отримано ${listings.length} оголошень`);
 
-        // Відфільтровуємо лише ті, які ще не обробляли
         let newListings = listings.filter(ad => !processedAds.has(ad.id));
 
         console.log(`🆕 Нових оголошень для перевірки: ${newListings.length}`);
 
         let filteredListings = [];
-        for (let i = 0; i < newListings.length; i += 10) {
-            let batch = newListings.slice(i, i + 10);
+        for (let ad of newListings) {
+            if (processedAds.has(ad.id)) continue;
+            if (ad.city.toLowerCase() !== 'київ') continue;
+            if (!ad.district.toLowerCase().includes('дарницький')) continue;
+            if (!isRecentlyPublished(ad.timeText)) continue;
 
-            for (let ad of batch) {
-                if (processedAds.has(ad.id)) {
-                    console.log(`⏩ Вже перевірено раніше: ${ad.title}`);
-                    continue;
-                }
-
-                if (ad.city.toLowerCase() !== 'київ') {
-                    console.log(`⏩ Не Київ: ${ad.title}`);
-                    processedAds.add(ad.id);
-                    continue;
-                }
-
-                if (!ad.district.toLowerCase().includes('дарницький')) {
-                    console.log(`⏩ Не Дарницький район: ${ad.title}`);
-                    processedAds.add(ad.id);
-                    continue;
-                }
-
-                if (!isRecentlyPublished(ad.timeText)) {
-                    console.log(`⏩ Не нове оголошення: ${ad.title}`);
-                    processedAds.add(ad.id);
-                    continue;
-                }
-
-                console.log(`✅ Додаємо в список для відправки: ${ad.title}`);
-                filteredListings.push(ad);
-                processedAds.add(ad.id);
-            }
-
-            saveJSON(PROCESSED_ADS_FILE, [...processedAds]); // Зберігаємо оновлений список перевірених
+            filteredListings.push(ad);
+            processedAds.add(ad.id);
         }
+
+        saveJSON(PROCESSED_ADS_FILE, [...processedAds]);
 
         return filteredListings;
 
@@ -136,10 +112,10 @@ async function getOlxListings() {
     }
 }
 
-// 📩 Відправка оголошень підписникам
+// 📩 Відправка оголошень
 async function sendListings() {
     const listings = await getOlxListings();
-    
+
     if (listings.length === 0) {
         console.log('❗ Немає нових оголошень');
         return;
@@ -160,28 +136,25 @@ async function sendListings() {
         });
     });
 
-    console.log(`📩 Відправлено ${listings.length} оголошень підписникам`);
+    console.log(`📩 Відправлено ${listings.length} оголошень`);
 }
 
-// 🔁 Запуск автоматичного парсингу кожні **30 секунд**
+// 🔁 Запуск автоматичного парсингу
 setInterval(sendListings, 30000);
 
-// 📢 Команда /start для підписки
+// 📢 Команда /start
 bot.start((ctx) => {
     const userId = ctx.message.chat.id;
     if (!subscribers.includes(userId)) {
         subscribers.push(userId);
         saveJSON(SUBSCRIBERS_FILE, subscribers);
-        ctx.reply('✅ Ви підписалися на оновлення квартир у Дарницькому районі Києва! Оголошення будуть надходити автоматично.');
+        ctx.reply('✅ Ви підписалися на оновлення!');
     } else {
         ctx.reply('❗ Ви вже підписані.');
     }
 });
 
-// 🚀 Запуск бота
-bot.launch()
-    .then(() => console.log('🤖 Бот запущено!'))
-    .catch(err => console.error('❌ Помилка запуску бота:', err));
+bot.launch().then(() => console.log('🤖 Бот запущено!'));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
