@@ -1,42 +1,44 @@
+require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const puppeteer = require('puppeteer');
-const dotenv = require('dotenv');
 const fs = require('fs');
 
-dotenv.config();
+const BOT_TOKEN = process.env.BOT_TOKEN;
+if (!BOT_TOKEN) {
+    console.error("❌ BOT_TOKEN не заданий! Додай його в GitHub Secrets.");
+    process.exit(1);
+}
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new Telegraf(BOT_TOKEN);
 
 const SUBSCRIBERS_FILE = 'subscribers.json';
 const PROCESSED_ADS_FILE = 'processedAds.json';
 
-let subscribers = loadJSON(SUBSCRIBERS_FILE, []);
-let processedAds = new Set(loadJSON(PROCESSED_ADS_FILE, []));
-
-// 🛠️ Безпечне завантаження JSON
-function loadJSON(file, defaultValue) {
-    if (fs.existsSync(file)) {
-        try {
-            return JSON.parse(fs.readFileSync(file, 'utf-8'));
-        } catch (error) {
-            console.error(`❌ Помилка читання ${file}:`, error);
-        }
+// 📂 Функції роботи з JSON
+const loadJSON = (file, defaultValue) => {
+    try {
+        return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')) : defaultValue;
+    } catch (error) {
+        console.error(`❌ Помилка читання ${file}:`, error);
+        return defaultValue;
     }
-    return defaultValue;
-}
+};
 
-// 💾 Безпечне збереження JSON
-function saveJSON(file, data) {
+const saveJSON = (file, data) => {
     try {
         fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
     } catch (error) {
         console.error(`❌ Помилка запису ${file}:`, error);
     }
-}
+};
 
-// ⏳ Перевірка часу публікації (не старше 2 днів)
-function isRecentlyPublished(timeText) {
+let subscribers = loadJSON(SUBSCRIBERS_FILE, []);
+let processedAds = new Set(loadJSON(PROCESSED_ADS_FILE, []));
+
+// 📌 Функція перевірки новизни оголошення (не старше 2 днів)
+const isRecentlyPublished = (timeText) => {
     if (!timeText) return false;
+
     if (timeText.includes('Щойно')) return true;
 
     const minutesMatch = timeText.match(/(\d+)\s*хв/);
@@ -49,7 +51,7 @@ function isRecentlyPublished(timeText) {
     if (daysMatch) return parseInt(daysMatch[1], 10) <= 2;
 
     return false;
-}
+};
 
 // 🔍 Функція отримання оголошень з OLX
 async function getOlxListings() {
@@ -59,11 +61,12 @@ async function getOlxListings() {
     try {
         browser = await puppeteer.launch({
             headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
         const page = await browser.newPage();
-        await page.goto('https://www.olx.ua/uk/nedvizhimost/arenda-kvartir/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        const url = 'https://www.olx.ua/uk/nedvizhimost/arenda-kvartir/';
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
         await page.waitForSelector('div[data-cy="l-card"]', { timeout: 5000 });
 
@@ -85,6 +88,7 @@ async function getOlxListings() {
 
         console.log(`✅ Отримано ${listings.length} оголошень`);
 
+        // Відфільтровуємо лише нові оголошення
         let newListings = listings.filter(ad => !processedAds.has(ad.id));
 
         console.log(`🆕 Нових оголошень для перевірки: ${newListings.length}`);
@@ -101,7 +105,6 @@ async function getOlxListings() {
         }
 
         saveJSON(PROCESSED_ADS_FILE, [...processedAds]);
-
         return filteredListings;
 
     } catch (error) {
@@ -112,7 +115,7 @@ async function getOlxListings() {
     }
 }
 
-// 📩 Відправка оголошень
+// 📩 Відправка оголошень підписникам
 async function sendListings() {
     const listings = await getOlxListings();
 
@@ -136,25 +139,28 @@ async function sendListings() {
         });
     });
 
-    console.log(`📩 Відправлено ${listings.length} оголошень`);
+    console.log(`📩 Відправлено ${listings.length} оголошень підписникам`);
 }
 
-// 🔁 Запуск автоматичного парсингу
+// 🔁 Запуск автоматичного парсингу кожні 30 секунд
 setInterval(sendListings, 30000);
 
-// 📢 Команда /start
+// 📢 Команда /start для підписки
 bot.start((ctx) => {
     const userId = ctx.message.chat.id;
     if (!subscribers.includes(userId)) {
         subscribers.push(userId);
         saveJSON(SUBSCRIBERS_FILE, subscribers);
-        ctx.reply('✅ Ви підписалися на оновлення!');
+        ctx.reply('✅ Ви підписалися на оновлення квартир у Дарницькому районі Києва! Оголошення будуть надходити автоматично.');
     } else {
         ctx.reply('❗ Ви вже підписані.');
     }
 });
 
-bot.launch().then(() => console.log('🤖 Бот запущено!'));
+// 🚀 Запуск бота
+bot.launch()
+    .then(() => console.log('🤖 Бот запущено!'))
+    .catch(err => console.error('❌ Помилка запуску бота:', err));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));

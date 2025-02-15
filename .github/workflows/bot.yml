@@ -27,4 +27,6 @@ jobs:
           sudo apt-get install -y libgbm-dev
 
       - name: Run the bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: npm start
