@@ -1,0 +1,26 @@
+name: Run OLX Parser
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"  # Запуск кожні 30 хвилин
+  workflow_dispatch:  # Можна запустити вручну
+
+jobs:
+  run-parser:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Завантажуємо репозиторій
+        uses: actions/checkout@v4
+
+      - name: Встановлюємо Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Встановлюємо залежності
+        run: npm install
+
+      - name: Запускаємо бота
+        run: npm start
+
