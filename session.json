@@ -3,7 +3,24 @@
     {
       "id": "639345361:639345361",
       "data": {
-        "__scenes": {},
+        "__scenes": {
+          "current": "filter-wizard",
+          "state": {
+            "userSettings": {
+              "city": "київ",
+              "district": "дарницький",
+              "minPrice": 0,
+              "maxPrice": 18000,
+              "keywords": [],
+              "maxFloor": 9,
+              "minArea": 38,
+              "petsAllowed": [
+                "кіт"
+              ]
+            }
+          },
+          "cursor": 1
+        },
         "tempSettings": {
           "city": "київ",
           "district": "дарницький",

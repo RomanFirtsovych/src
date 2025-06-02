@@ -1,27 +1,27 @@
-// src/bot.js
 require('dotenv').config();
 const { Telegraf, Scenes, session } = require('telegraf');
-const LocalSession = require('telegraf-session-local'); // Для збереження сесій Wizard
+const LocalSession = require('telegraf-session-local');
 const { log, loadJSON, saveJSON } = require('./helpers');
-const { getAllOlxListings } = require('./olxParser'); // Змінено на getAllOlxListings
+const { getAllOlxListings } = require('./olxParser');
 const { SUBSCRIBERS_FILE, PROCESSED_ADS_FILE, USER_SETTINGS_FILE, SESSION_FILE, DEFAULT_USER_SETTINGS } = require('./config');
-const { filterWizard, formatSettings } = require('./scenes'); // Імпортуємо сцену та форматтер
+const { filterWizard, formatSettings } = require('./scenes');
 
 log('info', 'Запуск бота...');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Налаштування для збереження сесій Telegraf (потрібно для Wizard Scenes)
-// Правильне використання LocalSession для Telegraf v4+
 bot.use(new LocalSession({ database: SESSION_FILE }).middleware());
 
 const stage = new Scenes.Stage([filterWizard]);
 bot.use(stage.middleware());
 
-
 let subscribers = loadJSON(SUBSCRIBERS_FILE, []);
 let processedAds = new Set(loadJSON(PROCESSED_ADS_FILE, []));
 let userSettings = loadJSON(USER_SETTINGS_FILE, {});
+
+// --- Функція затримки (ДОДАНО В bot.js) ---
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // --- Допоміжна функція для збереження налаштувань користувача ---
 function saveUserSettings() {
@@ -44,7 +44,6 @@ async function sendListings() {
     const settings = userSettings[userId] || DEFAULT_USER_SETTINGS;
 
     log('debug', `Перевірка оголошень для користувача ${userId} з фільтрами:`, settings);
-    // Використовуємо getAllOlxListings для парсингу з пагінацією
     const newAdsForUser = await getAllOlxListings(settings, processedAds);
 
     if (newAdsForUser.length === 0) {
@@ -55,24 +54,37 @@ async function sendListings() {
     log('info', `Знайдено ${newAdsForUser.length} нових оголошень для користувача ${userId}`);
 
     for (const ad of newAdsForUser) {
-      if (processedAds.has(ad.id)) { // Подвійна перевірка на випадок, якщо було додано паралельно
+      if (processedAds.has(ad.id)) {
           continue;
       }
       try {
+        // Гарантуємо, що заголовок існує для substring
+        const safeTitle = ad.title || 'Без назви';
+
         await bot.telegram.sendMessage(
           userId,
-          `🏡 *${ad.title}*\n📍 *${ad.city}, ${ad.district}*\n💰 ${ad.price}\n🔗 [Детальніше](${ad.link})`,
+          `🏡 *${safeTitle}*\n📍 *${ad.city}, ${ad.district}*\n💰 ${ad.price}\n🔗 [Детальніше](${ad.link})`,
           { parse_mode: 'Markdown' }
         );
-        log('info', `Надіслано оголошення "${ad.title.substring(0, 30)}..." користувачу ${userId}`);
+        log('info', `Надіслано оголошення "${safeTitle.substring(0, Math.min(safeTitle.length, 30))}..." користувачу ${userId}`);
         processedAds.add(ad.id); // Додаємо до списку оброблених після успішної відправки
+        await delay(1000); // *** ДОДАНО ЗАTРИМКУ МІЖ ПОВІДОМЛЕННЯМИ (1 секунда) ***
       } catch (error) {
-        log('error', `Помилка надсилання повідомлення "${ad.title.substring(0, 30)}..." користувачу ${userId}: ${error.message}`);
-        // Обробка блокування бота користувачем (HTTP 403 Forbidden)
+        // Гарантуємо, що заголовок існує для substring у логуванні помилки
+        const safeTitleForError = ad.title || 'Без назви';
+        log('error', `Помилка надсилання повідомлення "${safeTitleForError.substring(0, Math.min(safeTitleForError.length, 30))}..." користувачу ${userId}: ${error.message}`);
+
         if (error.response && error.response.error_code === 403) {
           log('warn', `Користувач ${userId} заблокував бота. Додаємо до списку на видалення.`);
           subscribersToRemove.push(userId);
         }
+        // *** ДОДАНО ОБРОБКУ 429: Too Many Requests ВІД TELEGRAM ***
+        if (error.code === 429 && error.parameters && error.parameters.retry_after) {
+          const retryAfter = error.parameters.retry_after;
+          log('warn', `Telegram: Занадто багато запитів. Чекаємо ${retryAfter} секунд перед продовженням надсилання.`);
+          await delay(retryAfter * 1000 + 500); // Чекаємо, як просить Telegram, плюс невеликий буфер
+        }
+        // Можливо, додати 'break;' тут, щоб зупинити надсилання для цього користувача, якщо є багато помилок поспіль
       }
     }
   }
@@ -87,7 +99,7 @@ async function sendListings() {
   }
 
   if (processedAds.size > currentProcessedAdsSize) {
-      saveJSON(PROCESSED_ADS_FILE, [...processedAds]); // Зберігаємо нові оброблені ID
+      saveJSON(PROCESSED_ADS_FILE, [...processedAds]);
       log('info', `Збережено нові оголошення. Загальна кількість оброблених: ${processedAds.size}`);
   } else {
       log('info', 'Нових оголошень не виявлено під час цієї перевірки.');
@@ -103,7 +115,7 @@ bot.telegram.setMyCommands([
   { command: 'start', description: 'Запустити бота та підписатися' },
   { command: 'filter', description: 'Налаштувати фільтри пошуку (інтерактивно)' },
   { command: 'settings', description: 'Показати поточні налаштування' },
-  { command: 'check', description: 'Перевірити оголошення зараз' }, // Нова команда
+  { command: 'check', description: 'Перевірити оголошення зараз' },
   { command: 'stop', description: 'Відписатися від оновлень' },
   { command: 'help', description: 'Отримати довідку' },
 ]);
@@ -180,19 +192,29 @@ bot.command('check', async (ctx) => {
     log('info', `Знайдено ${newAdsForUser.length} нових оголошень для негайної відправки користувачу ${userId}`);
     let sentCount = 0;
     for (const ad of newAdsForUser) {
-        if (processedAds.has(ad.id)) continue; // Перевірка, чи вже не надіслано
+        if (processedAds.has(ad.id)) continue;
 
         try {
+            // Гарантуємо, що заголовок існує для substring
+            const safeTitle = ad.title || 'Без назви';
+
             await bot.telegram.sendMessage(
                 userId,
-                `🏡 *${ad.title}*\n📍 *${ad.city}, ${ad.district}*\n💰 ${ad.price}\n🔗 [Детальніше](${ad.link})`,
+                `🏡 *${safeTitle}*\n📍 *${ad.city}, ${ad.district}*\n💰 ${ad.price}\n🔗 [Детальніше](${ad.link})`,
                 { parse_mode: 'Markdown' }
             );
             processedAds.add(ad.id);
             sentCount++;
+            await delay(1000); // *** ДОДАНО ЗАTРИМКУ МІЖ ПОВІДОМЛЕННЯМИ (1 секунда) ***
         } catch (error) {
-            log('error', `Помилка надсилання оголошення під час /check "${ad.title.substring(0, 30)}..." користувачу ${userId}: ${error.message}`);
-            // Не видаляємо з підписників тут, це обробляється у sendListings
+            const safeTitleForError = ad.title || 'Без назви';
+            log('error', `Помилка надсилання оголошення під час /check "${safeTitleForError.substring(0, Math.min(safeTitleForError.length, 30))}..." користувачу ${userId}: ${error.message}`);
+            // *** ДОДАНО ОБРОБКУ 429: Too Many Requests ВІД TELEGRAM ***
+            if (error.code === 429 && error.parameters && error.parameters.retry_after) {
+              const retryAfter = error.parameters.retry_after;
+              log('warn', `Telegram: Занадто багато запитів під час /check. Чекаємо ${retryAfter} секунд.`);
+              await delay(retryAfter * 1000 + 500);
+            }
         }
     }
     saveJSON(PROCESSED_ADS_FILE, [...processedAds]);
@@ -205,7 +227,6 @@ bot.command('check', async (ctx) => {
 bot.command('filter', async (ctx) => {
   const userId = ctx.message.chat.id;
   log('info', `/filter від ${userId} - Запуск Wizard Scene.`);
-  // Передаємо функцію збереження в сцену
   ctx.scene.enter('filter-wizard', {
     userSettings: userSettings[userId] || DEFAULT_USER_SETTINGS,
     saveSettings: (updatedSettings) => {
@@ -232,9 +253,8 @@ bot.on('message', (ctx) => {
   const userId = ctx.message.chat.id;
   const username = ctx.message.chat.username || 'невідомо';
   const text = ctx.message.text || '';
-  // Перевіряємо, чи це не колбек-запит (який обробляється сценою) і не частина Wizard
   if (!ctx.callbackQuery && (!ctx.scene.current || ctx.scene.current.id !== 'filter-wizard')) {
-      log('debug', `Від ${userId} (@${username}): "${text.substring(0, 50)}..."`);
+      log('debug', `Від ${userId} (@${username}): "${text.substring(0, Math.min(text.length, 50))}..."`); // Додано Math.min
   }
 });
 
@@ -248,7 +268,6 @@ setInterval(() => {
 bot.launch()
   .then(() => {
     log('info', 'Бот успішно запущено! Очікуємо команд...');
-    // Виконати першу перевірку одразу після запуску
     sendListings().catch(err => log('error', `Глобальна помилка при першому запуску sendListings: ${err.message}`));
   })
   .catch(err => log('error', `Помилка запуску бота: ${err.message}`));
