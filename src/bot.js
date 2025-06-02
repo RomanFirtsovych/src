@@ -16,11 +16,12 @@ bot.use(new LocalSession({ database: SESSION_FILE }).middleware());
 const stage = new Scenes.Stage([filterWizard]);
 bot.use(stage.middleware());
 
+
 let subscribers = loadJSON(SUBSCRIBERS_FILE, []);
 let processedAds = new Set(loadJSON(PROCESSED_ADS_FILE, []));
 let userSettings = loadJSON(USER_SETTINGS_FILE, {});
 
-// --- Функція затримки (ДОДАНО В bot.js) ---
+// --- Функція затримки ---
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // --- Допоміжна функція для збереження налаштувань користувача ---
@@ -58,7 +59,6 @@ async function sendListings() {
           continue;
       }
       try {
-        // Гарантуємо, що заголовок існує для substring
         const safeTitle = ad.title || 'Без назви';
 
         await bot.telegram.sendMessage(
@@ -67,24 +67,22 @@ async function sendListings() {
           { parse_mode: 'Markdown' }
         );
         log('info', `Надіслано оголошення "${safeTitle.substring(0, Math.min(safeTitle.length, 30))}..." користувачу ${userId}`);
-        processedAds.add(ad.id); // Додаємо до списку оброблених після успішної відправки
-        await delay(1000); // *** ДОДАНО ЗАTРИМКУ МІЖ ПОВІДОМЛЕННЯМИ (1 секунда) ***
+        processedAds.add(ad.id);
+        await delay(1000); // Затримка 1 секунда між повідомленнями
       } catch (error) {
-        // Гарантуємо, що заголовок існує для substring у логуванні помилки
         const safeTitleForError = ad.title || 'Без назви';
         log('error', `Помилка надсилання повідомлення "${safeTitleForError.substring(0, Math.min(safeTitleForError.length, 30))}..." користувачу ${userId}: ${error.message}`);
 
         if (error.response && error.response.error_code === 403) {
           log('warn', `Користувач ${userId} заблокував бота. Додаємо до списку на видалення.`);
           subscribersToRemove.push(userId);
+          break; // Припиняємо надсилання для цього користувача, щоб не накопичувати помилки
         }
-        // *** ДОДАНО ОБРОБКУ 429: Too Many Requests ВІД TELEGRAM ***
         if (error.code === 429 && error.parameters && error.parameters.retry_after) {
           const retryAfter = error.parameters.retry_after;
           log('warn', `Telegram: Занадто багато запитів. Чекаємо ${retryAfter} секунд перед продовженням надсилання.`);
-          await delay(retryAfter * 1000 + 500); // Чекаємо, як просить Telegram, плюс невеликий буфер
+          await delay(retryAfter * 1000 + 500);
         }
-        // Можливо, додати 'break;' тут, щоб зупинити надсилання для цього користувача, якщо є багато помилок поспіль
       }
     }
   }
@@ -119,6 +117,32 @@ bot.telegram.setMyCommands([
   { command: 'stop', description: 'Відписатися від оновлень' },
   { command: 'help', description: 'Отримати довідку' },
 ]);
+
+// *** ДОДАНО: Обробка подій my_chat_member для коректного видалення заблокованих користувачів ***
+bot.on('my_chat_member', async (ctx) => {
+  const userId = ctx.chat.id;
+  const oldStatus = ctx.myChatMember.old_chat_member.status;
+  const newStatus = ctx.myChatMember.new_chat_member.status;
+
+  if (oldStatus === 'member' && newStatus === 'kicked') {
+    // Користувач заблокував бота
+    log('info', `Користувач ${userId} заблокував бота.`);
+    if (subscribers.includes(userId)) {
+        subscribers = subscribers.filter(id => id !== userId);
+        delete userSettings[userId];
+        await saveJSON(SUBSCRIBERS_FILE, subscribers); // Використовуємо await, щоб зберегти зміни
+        await saveUserSettings(); // Використовуємо await, щоб зберегти зміни
+        log('info', `Користувача ${userId} успішно видалено зі списку підписників через блокування.`);
+    }
+  } else if (oldStatus === 'kicked' && newStatus === 'member') {
+    // Користувач розблокував бота (або додав його, якщо раніше блокував)
+    log('info', `Користувач ${userId} розблокував/додав бота. Запропонуйте йому /start.`);
+    // Тут можна автоматично запустити /start або запропонувати йому це
+    // Якщо хочете автоматичний /start, можна викликати bot.handleUpdate(ctx.update) для команди /start
+    // Але краще, щоб користувач явно відправив /start.
+  }
+});
+
 
 bot.start((ctx) => {
   const userId = ctx.message.chat.id;
@@ -195,7 +219,6 @@ bot.command('check', async (ctx) => {
         if (processedAds.has(ad.id)) continue;
 
         try {
-            // Гарантуємо, що заголовок існує для substring
             const safeTitle = ad.title || 'Без назви';
 
             await bot.telegram.sendMessage(
@@ -205,11 +228,10 @@ bot.command('check', async (ctx) => {
             );
             processedAds.add(ad.id);
             sentCount++;
-            await delay(1000); // *** ДОДАНО ЗАTРИМКУ МІЖ ПОВІДОМЛЕННЯМИ (1 секунда) ***
+            await delay(1000); // Затримка 1 секунда між повідомленнями
         } catch (error) {
             const safeTitleForError = ad.title || 'Без назви';
             log('error', `Помилка надсилання оголошення під час /check "${safeTitleForError.substring(0, Math.min(safeTitleForError.length, 30))}..." користувачу ${userId}: ${error.message}`);
-            // *** ДОДАНО ОБРОБКУ 429: Too Many Requests ВІД TELEGRAM ***
             if (error.code === 429 && error.parameters && error.parameters.retry_after) {
               const retryAfter = error.parameters.retry_after;
               log('warn', `Telegram: Занадто багато запитів під час /check. Чекаємо ${retryAfter} секунд.`);
@@ -254,7 +276,7 @@ bot.on('message', (ctx) => {
   const username = ctx.message.chat.username || 'невідомо';
   const text = ctx.message.text || '';
   if (!ctx.callbackQuery && (!ctx.scene.current || ctx.scene.current.id !== 'filter-wizard')) {
-      log('debug', `Від ${userId} (@${username}): "${text.substring(0, Math.min(text.length, 50))}..."`); // Додано Math.min
+      log('debug', `Від ${userId} (@${username}): "${text.substring(0, Math.min(text.length, 50))}..."`);
   }
 });
 
@@ -268,9 +290,10 @@ setInterval(() => {
 bot.launch()
   .then(() => {
     log('info', 'Бот успішно запущено! Очікуємо команд...');
+    // Виконати першу перевірку одразу після запуску
     sendListings().catch(err => log('error', `Глобальна помилка при першому запуску sendListings: ${err.message}`));
   })
-  .catch(err => log('error', `Помилка запуску бота: ${err.message}`));
+  .catch(err => log('error', `Помилка запуску бота: ${err.message}`)); // Цей catch має перехоплювати помилки запуску Telegraf
 
 // Зупинка бота на сигнали
 process.once('SIGINT', () => {
